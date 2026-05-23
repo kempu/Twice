@@ -34,6 +34,10 @@ struct LayoutBar: View {
         RoundedRectangle(cornerRadius: 9, style: .circular)
     }
 
+    private var iconSectionBackground: Color {
+        Color(red: 0.36, green: 0.52, blue: 0.68)
+    }
+
     init(section: MenuBarSection, spacing: CGFloat = 0) {
         self.section = section
         self.spacing = spacing
@@ -43,7 +47,7 @@ struct LayoutBar: View {
         conditionalBody
             .frame(height: 50)
             .frame(maxWidth: .infinity)
-            .layoutBarStyle(appState: appState, averageColorInfo: menuBarManager.averageColorInfo)
+            .background(iconSectionBackground)
             .clipShape(backgroundShape)
             .overlay {
                 backgroundShape
@@ -55,7 +59,7 @@ struct LayoutBar: View {
     private var conditionalBody: some View {
         if imageCache.cacheFailed(for: section.name) {
             Text("Unable to display menu bar items")
-                .foregroundStyle(menuBarManager.averageColorInfo?.color.brightness ?? 0 > 0.67 ? .black : .white)
+                .foregroundStyle(.white)
         } else {
             Representable(appState: appState, section: section, spacing: spacing)
         }

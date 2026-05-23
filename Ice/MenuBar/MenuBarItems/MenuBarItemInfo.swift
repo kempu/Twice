@@ -17,6 +17,12 @@ struct MenuBarItemInfo: Hashable, CustomStringConvertible {
         namespace == .special
     }
 
+    /// A Boolean value that indicates whether the item is one of Ice's
+    /// control items.
+    var isControlItem: Bool {
+        Self.controlItems.contains(self)
+    }
+
     var description: String {
         namespace.rawValue + ":" + title
     }
@@ -26,6 +32,15 @@ struct MenuBarItemInfo: Hashable, CustomStringConvertible {
         self.namespace = namespace
         self.title = title
     }
+
+    /// Creates a simplified item for the control item with the given identifier.
+    private init(controlItem identifier: ControlItem.Identifier) {
+        if #available(macOS 26.0, *) {
+            self.init(namespace: .controlCenter, title: identifier.rawValue)
+        } else {
+            self.init(namespace: .ice, title: identifier.rawValue)
+        }
+    }
 }
 
 // MARK: MenuBarItemInfo Constants
@@ -34,28 +49,22 @@ extension MenuBarItemInfo {
     static let immovableItems = [clock, siri, controlCenter]
 
     /// An array of items that can be moved, but cannot be hidden.
-    static let nonHideableItems = [audioVideoModule, faceTime, musicRecognition]
+    static let nonHideableItems = [audioVideoModule, faceTime, musicRecognition, screenCaptureUI]
+
+    /// An array of items that represent Ice's control items.
+    static let controlItems = [iceIcon, hiddenControlItem, alwaysHiddenControlItem]
 
     /// Information for an item that represents the Ice icon, a.k.a. the
     /// control item for the visible section.
-    static let iceIcon = MenuBarItemInfo(
-        namespace: .ice,
-        title: ControlItem.Identifier.iceIcon.rawValue
-    )
+    static let iceIcon = MenuBarItemInfo(controlItem: .iceIcon)
 
     /// Information for an item that represents the control item for the
     /// hidden section.
-    static let hiddenControlItem = MenuBarItemInfo(
-        namespace: .ice,
-        title: ControlItem.Identifier.hidden.rawValue
-    )
+    static let hiddenControlItem = MenuBarItemInfo(controlItem: .hidden)
 
     /// Information for an item that represents the control item for the
     /// always-hidden section.
-    static let alwaysHiddenControlItem = MenuBarItemInfo(
-        namespace: .ice,
-        title: ControlItem.Identifier.alwaysHidden.rawValue
-    )
+    static let alwaysHiddenControlItem = MenuBarItemInfo(controlItem: .alwaysHidden)
 
     /// Information for the "Clock" item.
     static let clock = MenuBarItemInfo(
@@ -64,16 +73,22 @@ extension MenuBarItemInfo {
     )
 
     /// Information for the "Siri" item.
-    static let siri = MenuBarItemInfo(
-        namespace: .systemUIServer,
-        title: "Siri"
-    )
+    static let siri: MenuBarItemInfo = {
+        if #available(macOS 26.0, *) {
+            MenuBarItemInfo(namespace: .controlCenter, title: "Siri")
+        } else {
+            MenuBarItemInfo(namespace: .systemUIServer, title: "Siri")
+        }
+    }()
 
     /// Information for the "BentoBox" (a.k.a. "Control Center") item.
-    static let controlCenter = MenuBarItemInfo(
-        namespace: .controlCenter,
-        title: "BentoBox"
-    )
+    static let controlCenter: MenuBarItemInfo = {
+        if #available(macOS 26.0, *) {
+            MenuBarItemInfo(namespace: .controlCenter, title: "BentoBox-0")
+        } else {
+            MenuBarItemInfo(namespace: .controlCenter, title: "BentoBox")
+        }
+    }()
 
     /// Information for the item that appears in the menu bar while the
     /// screen or system audio is being recorded.
@@ -92,6 +107,13 @@ extension MenuBarItemInfo {
     static let musicRecognition = MenuBarItemInfo(
         namespace: .controlCenter,
         title: "MusicRecognition"
+    )
+
+    /// Information for the item that appears during recordings started by
+    /// the macOS Screenshot tool.
+    static let screenCaptureUI = MenuBarItemInfo(
+        namespace: .screenCaptureUI,
+        title: "Item-0"
     )
 
     /// Information for a special item that indicates the location where
@@ -211,6 +233,9 @@ extension MenuBarItemInfo.Namespace {
 
     /// The namespace for menu bar items owned by the System UI Server.
     static let systemUIServer = Self("com.apple.systemuiserver")
+
+    /// The namespace for menu bar items owned by the Screenshot tool.
+    static let screenCaptureUI = Self("com.apple.screencaptureui")
 
     /// The namespace for special items.
     static let special = Self("Special")

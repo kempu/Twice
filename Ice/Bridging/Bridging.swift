@@ -64,6 +64,21 @@ extension Bridging {
         }
         return rect
     }
+
+    /// Returns the level for the window with the specified identifier.
+    ///
+    /// - Parameter windowID: An identifier for a window.
+    /// - Returns: The level of the window associated with `windowID`, or `nil`
+    ///   if the operation failed.
+    static func getWindowLevel(for windowID: CGWindowID) -> CGWindowLevel? {
+        var level: CGWindowLevel = 0
+        let result = CGSGetWindowLevel(CGSMainConnectionID(), windowID, &level)
+        guard result == .success else {
+            Logger.bridging.error("CGSGetWindowLevel failed with error \(result.logString)")
+            return nil
+        }
+        return level
+    }
 }
 
 // MARK: Private Window List Helpers
@@ -137,7 +152,9 @@ extension Bridging {
             Logger.bridging.error("CGSGetProcessMenuBarWindowList failed with error \(result.logString)")
             return []
         }
-        return [CGWindowID](list[..<Int(realCount)])
+        return list[..<Int(realCount)].filter { windowID in
+            Bridging.getWindowLevel(for: windowID) != kCGMainMenuWindowLevel
+        }
     }
 
     private static func getOnScreenMenuBarWindowList() -> [CGWindowID] {

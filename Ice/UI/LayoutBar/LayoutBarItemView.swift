@@ -123,12 +123,14 @@ final class LayoutBarItemView: NSView {
 
     override func draw(_ dirtyRect: NSRect) {
         if !isDraggingPlaceholder {
-            image?.draw(
-                in: bounds,
-                from: .zero,
-                operation: .sourceOver,
-                fraction: isEnabled ? 1.0 : 0.67
-            )
+            if let image {
+                image.draw(
+                    in: bounds,
+                    from: .zero,
+                    operation: .sourceOver,
+                    fraction: isEnabled ? 1.0 : 0.67
+                )
+            }
             if Bridging.responsivity(for: item.ownerPID) == .unresponsive {
                 let warningImage = NSImage.warning
                 let width: CGFloat = 15

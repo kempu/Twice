@@ -422,7 +422,11 @@ private struct MenuBarSearchItemView: View {
     }
 
     private var appIcon: NSImage? {
-        if item.info.namespace == .systemUIServer {
+        if item.info == .iceIcon {
+            NSApp.applicationIconImage
+        } else if let sourceIcon = item.sourceApplication?.icon {
+            sourceIcon
+        } else if item.info.namespace == .systemUIServer || item.info.namespace == .controlCenter {
             controlCenterIcon
         } else {
             item.owningApplication?.icon
@@ -449,16 +453,14 @@ private struct MenuBarSearchItemView: View {
         if let image {
             ZStack {
                 RoundedRectangle(cornerRadius: 5, style: .circular)
-                    .fill(.regularMaterial)
-                    .brightness(0.25)
-                    .opacity(0.75)
+                    .fill(Color(red: 0.36, green: 0.52, blue: 0.68))
                     .frame(width: item.frame.width)
                     .overlay {
                         RoundedRectangle(cornerRadius: 5, style: .circular)
                             .inset(by: 0.5)
                             .stroke(lineWidth: 1)
                             .foregroundStyle(.white)
-                            .opacity(0.15)
+                            .opacity(0.18)
                     }
 
                 Image(nsImage: image)

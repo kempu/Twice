@@ -11,7 +11,11 @@ extension View {
     /// - Note: The view this modifier is applied to must be transparent, or the style
     ///   will be drawn incorrectly.
     @ViewBuilder
-    func layoutBarStyle(appState: AppState, averageColorInfo: MenuBarAverageColorInfo?) -> some View {
+    func layoutBarStyle(
+        appState: AppState,
+        averageColorInfo: MenuBarAverageColorInfo?,
+        backgroundDarkeningOpacity: Double = 0
+    ) -> some View {
         background {
             if appState.isActiveSpaceFullscreen {
                 Color.black
@@ -24,6 +28,7 @@ extension View {
                                 .opacity(0.2)
                                 .blendMode(.softLight)
                         )
+                        .overlay(Color.black.opacity(backgroundDarkeningOpacity))
                 case .desktopWallpaper:
                     Color(cgColor: averageColorInfo.color)
                         .overlay(
@@ -31,9 +36,11 @@ extension View {
                                 .opacity(0.5)
                                 .blendMode(.softLight)
                         )
+                        .overlay(Color.black.opacity(backgroundDarkeningOpacity))
                 }
             } else {
                 Color.defaultLayoutBar
+                    .overlay(Color.black.opacity(backgroundDarkeningOpacity))
             }
         }
         .overlay {

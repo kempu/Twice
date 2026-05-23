@@ -4,6 +4,7 @@
 //
 
 import Cocoa
+import AXSwift
 
 // MARK: - MenuBarItem
 
@@ -14,6 +15,9 @@ struct MenuBarItem {
 
     /// The menu bar item info associated with this item.
     let info: MenuBarItemInfo
+
+    /// The process identifier of the application that created the item.
+    let sourcePID: pid_t?
 
     /// The identifier of the item's window.
     var windowID: CGWindowID {
@@ -65,28 +69,69 @@ struct MenuBarItem {
         window.owningApplication
     }
 
+    /// The application that created the item.
+    var sourceApplication: NSRunningApplication? {
+        guard let sourcePID else {
+            return nil
+        }
+        return NSRunningApplication(processIdentifier: sourcePID)
+    }
+
+    /// The application best suited for user-facing names and icons.
+    private var displayApplication: NSRunningApplication? {
+        if #available(macOS 26.0, *), let sourceApplication {
+            return sourceApplication
+        }
+        return owningApplication
+    }
+
+    /// A Boolean value that indicates whether this is a system-created clone.
+    var isSystemClone: Bool {
+        title == "System Status Item Clone"
+    }
+
+    /// A Boolean value that indicates whether this item is a macOS 26 Control Center
+    /// proxy that could not be matched back to a source app.
+    var isUnresolvedControlCenterProxy: Bool {
+        guard #available(macOS 26.0, *) else {
+            return false
+        }
+        return sourcePID == nil &&
+        info.namespace == .controlCenter &&
+        title?.wholeMatch(of: /Item-\d+/) != nil
+    }
+
+    /// A Boolean value that indicates whether Ice should expose this item to users.
+    var isManageableCandidate: Bool {
+        !isSystemClone && !isUnresolvedControlCenterProxy
+    }
+
     /// A name associated with the item that is suited for display to
     /// the user.
     var displayName: String {
+        if info == .iceIcon {
+            return "Ice"
+        }
+
         var fallback: String { "Unknown" }
-        guard let owningApplication else {
+        guard let application = displayApplication else {
             return ownerName ?? title ?? fallback
         }
         var bestName: String {
-            owningApplication.localizedName ??
+            application.localizedName ??
             ownerName ??
-            owningApplication.bundleIdentifier ??
+            application.bundleIdentifier ??
             fallback
         }
         guard let title else {
             return bestName
         }
         // by default, use the application name, but handle a few special cases
-        return switch MenuBarItemInfo.Namespace(owningApplication.bundleIdentifier) {
+        return switch MenuBarItemInfo.Namespace(application.bundleIdentifier) {
         case .controlCenter:
             switch title {
             case "AccessibilityShortcuts": "Accessibility Shortcuts"
-            case "BentoBox": bestName // Control Center
+            case "BentoBox", "BentoBox-0": bestName // Control Center
             case "FocusModes": "Focus"
             case "KeyboardBrightness": "Keyboard Brightness"
             case "MusicRecognition": "Music Recognition"
@@ -127,7 +172,28 @@ struct MenuBarItem {
     /// certain that the window is valid.
     private init(uncheckedItemWindow itemWindow: WindowInfo) {
         self.window = itemWindow
-        self.info = MenuBarItemInfo(uncheckedItemWindow: itemWindow)
+        if #available(macOS 26.0, *) {
+            self.sourcePID = MenuBarItemSourceCache.shared.sourcePID(for: itemWindow)
+        } else {
+            self.sourcePID = itemWindow.ownerPID
+        }
+        self.info = MenuBarItemInfo(uncheckedItemWindow: itemWindow, sourcePID: sourcePID)
+    }
+
+    /// Creates a menu bar item from the given window and info.
+    ///
+    /// This initializer does not perform any checks on the window to ensure that
+    /// it is a valid menu bar item window. Only call this initializer if you are
+    /// certain that the window is valid.
+    private init(uncheckedItemWindow itemWindow: WindowInfo, info: MenuBarItemInfo, sourcePID: pid_t?) {
+        self.window = itemWindow
+        self.info = info
+        self.sourcePID = sourcePID
+    }
+
+    /// Returns this item with the given info.
+    func replacingInfo(_ info: MenuBarItemInfo) -> MenuBarItem {
+        MenuBarItem(uncheckedItemWindow: window, info: info, sourcePID: sourcePID)
     }
 
     /// Creates a menu bar item.
@@ -197,7 +263,10 @@ extension MenuBarItem {
         return Bridging.getWindowList(option: option).lazy
             .filter(boundsPredicate)
             .compactMap { windowID in
-                MenuBarItem(windowID: windowID)
+                guard let window = WindowInfo(windowID: windowID) else {
+                    return nil
+                }
+                return MenuBarItem(uncheckedItemWindow: window)
             }
             .filter(titlePredicate)
             .sortedByOrderInMenuBar()
@@ -218,6 +287,148 @@ extension MenuBarItem: Hashable {
     }
 }
 
+// MARK: - MenuBarItem Source Cache
+
+@available(macOS 26.0, *)
+private final class MenuBarItemSourceCache {
+    /// A cached running application and its extras menu bar.
+    private final class CachedApplication {
+        private let runningApplication: NSRunningApplication
+        private var extrasMenuBar: UIElement?
+
+        var processIdentifier: pid_t {
+            runningApplication.processIdentifier
+        }
+
+        init(_ runningApplication: NSRunningApplication) {
+            self.runningApplication = runningApplication
+        }
+
+        private var isValidForAccessibility: Bool {
+            runningApplication.isFinishedLaunching &&
+            !runningApplication.isTerminated &&
+            runningApplication.activationPolicy != .prohibited &&
+            Bridging.responsivity(for: processIdentifier) != .unresponsive
+        }
+
+        func getExtrasMenuBar() -> UIElement? {
+            if let extrasMenuBar {
+                return extrasMenuBar
+            }
+
+            guard
+                isValidForAccessibility,
+                let application = Application(runningApplication),
+                let bar: UIElement = try? application.attribute(.extrasMenuBar)
+            else {
+                return nil
+            }
+
+            extrasMenuBar = bar
+            return bar
+        }
+    }
+
+    /// Shared cache instance.
+    static let shared = MenuBarItemSourceCache()
+
+    private var runningApplicationPIDs = Set<pid_t>()
+    private var applications = [CachedApplication]()
+    private var sourcePIDs = [CGWindowID: pid_t]()
+
+    private init() { }
+
+    /// Returns the source process identifier for the given window.
+    func sourcePID(for window: WindowInfo) -> pid_t? {
+        if let sourcePID = sourcePIDs[window.windowID] {
+            return sourcePID
+        }
+
+        updateRunningApplicationsIfNeeded()
+
+        guard
+            AXIsProcessTrusted(),
+            let windowFrame = stableFrame(for: window)
+        else {
+            return nil
+        }
+
+        for application in applications {
+            guard let extrasMenuBar = application.getExtrasMenuBar() else {
+                continue
+            }
+
+            let children: [UIElement] = (try? extrasMenuBar.arrayAttribute(.children)) ?? []
+            for child in children {
+                guard
+                    (try? child.attribute(.enabled) as Bool?) == true,
+                    let childFrame: CGRect = try? child.attribute(.frame),
+                    childFrame.center.distance(to: windowFrame.center) <= 2
+                else {
+                    continue
+                }
+
+                sourcePIDs[window.windowID] = application.processIdentifier
+                return application.processIdentifier
+            }
+        }
+
+        return nil
+    }
+
+    private func updateRunningApplicationsIfNeeded() {
+        let runningApplications = NSWorkspace.shared.runningApplications.filter {
+            $0.activationPolicy != .prohibited
+        }
+        let currentPIDs = Set(runningApplications.map(\.processIdentifier))
+
+        guard currentPIDs != runningApplicationPIDs else {
+            return
+        }
+
+        let applicationByPID = applications.reduce(into: [pid_t: CachedApplication]()) { result, application in
+            result[application.processIdentifier] = application
+        }
+
+        runningApplicationPIDs = currentPIDs
+        applications = runningApplications.map { runningApplication in
+            applicationByPID[runningApplication.processIdentifier] ?? CachedApplication(runningApplication)
+        }
+        sourcePIDs = sourcePIDs.filter { currentPIDs.contains($0.value) }
+    }
+
+    private func stableFrame(for window: WindowInfo) -> CGRect? {
+        var frame = window.frame
+
+        for attempt in 1...5 {
+            guard let currentFrame = Bridging.getWindowFrame(for: window.windowID) else {
+                return nil
+            }
+            if currentFrame == frame {
+                return currentFrame
+            }
+            frame = currentFrame
+            Thread.sleep(forTimeInterval: TimeInterval(attempt) / 100)
+        }
+
+        return frame
+    }
+}
+
+// MARK: - Geometry Helpers
+
+private extension CGRect {
+    var center: CGPoint {
+        CGPoint(x: midX, y: midY)
+    }
+}
+
+private extension CGPoint {
+    func distance(to other: CGPoint) -> CGFloat {
+        hypot(x - other.x, y - other.y)
+    }
+}
+
 // MARK: MenuBarItemInfo Unchecked Item Window Initializer
 private extension MenuBarItemInfo {
     /// Creates a simplified item from the given window.
@@ -225,16 +436,28 @@ private extension MenuBarItemInfo {
     /// This initializer does not perform any checks on the window to ensure that
     /// it is a valid menu bar item window. Only call this initializer if you are
     /// certain that the window is valid.
-    init(uncheckedItemWindow itemWindow: WindowInfo) {
-        if let bundleIdentifier = itemWindow.owningApplication?.bundleIdentifier {
+    init(uncheckedItemWindow itemWindow: WindowInfo, sourcePID: pid_t?) {
+        let title = itemWindow.title ?? ""
+        if ControlItem.Identifier(rawValue: title) != nil {
+            if #available(macOS 26.0, *) {
+                self = MenuBarItemInfo(namespace: .controlCenter, title: title)
+            } else {
+                self = MenuBarItemInfo(namespace: .ice, title: title)
+            }
+            return
+        }
+
+        if
+            #available(macOS 26.0, *),
+            let sourcePID,
+            let sourceApplication = NSRunningApplication(processIdentifier: sourcePID)
+        {
+            self.namespace = Namespace(sourceApplication.bundleIdentifier ?? sourceApplication.localizedName)
+        } else if let bundleIdentifier = itemWindow.owningApplication?.bundleIdentifier {
             self.namespace = Namespace(bundleIdentifier)
         } else {
             self.namespace = .null
         }
-        if let title = itemWindow.title {
-            self.title = title
-        } else {
-            self.title = ""
-        }
+        self.title = title
     }
 }

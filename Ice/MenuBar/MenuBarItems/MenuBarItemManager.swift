@@ -35,20 +35,31 @@ final class MenuBarItemManager: ObservableObject {
 
         /// Returns the cached menu bar items managed by Ice for the given section.
         func managedItems(for section: MenuBarSection.Name) -> [MenuBarItem] {
-            self[section].filter { item in
+            var seenItems = Set<MenuBarItemInfo>()
+            return self[section].filter { item in
+                guard item.isManageableCandidate else {
+                    return false
+                }
+
                 // Filter out items that can't be hidden.
                 guard item.canBeHidden else {
                     return false
                 }
 
+                if item.info.isControlItem {
+                    return item.info == .iceIcon
+                }
+
                 if item.owningApplication == .current {
                     // Ice icon is the only item owned by Ice that should be included.
-                    guard item.title == ControlItem.Identifier.iceIcon.rawValue else {
+                    guard item.info == .iceIcon || item.title == ControlItem.Identifier.iceIcon.rawValue else {
                         return false
                     }
                 }
 
                 return true
+            }.filter { item in
+                seenItems.insert(item.info).inserted
             }
         }
 
@@ -333,14 +344,18 @@ extension MenuBarItemManager {
             cachedItemWindowIDs = itemWindowIDs
         }
 
-        var items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        var items = applyingKnownControlItemInfo(
+            to: MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        )
 
         let hiddenControlItem = items.firstIndex(matching: .hiddenControlItem).map { items.remove(at: $0) }
         let alwaysHiddenControlItem = items.firstIndex(matching: .alwaysHiddenControlItem).map { items.remove(at: $0) }
+        items.removeAll { !$0.isManageableCandidate }
 
         guard let hiddenControlItem else {
             Logger.itemManager.warning("Missing control item for hidden section")
             Logger.itemManager.debug("Clearing menu bar item cache")
+            cachedItemWindowIDs.removeAll()
             itemCache.clear()
             return
         }
@@ -360,7 +375,39 @@ extension MenuBarItemManager {
         } catch {
             Logger.itemManager.error("Error enforcing control item order: \(error)")
             Logger.itemManager.debug("Clearing menu bar item cache")
+            cachedItemWindowIDs.removeAll()
             itemCache.clear()
+        }
+    }
+
+    /// Applies stable info to Ice's control items using their known windows.
+    private func applyingKnownControlItemInfo(to items: [MenuBarItem]) -> [MenuBarItem] {
+        guard let appState else {
+            return items
+        }
+
+        let infoByWindowID = appState.menuBarManager.sections.reduce(into: [CGWindowID: MenuBarItemInfo]()) { result, section in
+            guard let windowID = section.controlItem.windowID else {
+                return
+            }
+
+            let info: MenuBarItemInfo = switch section.name {
+            case .visible: .iceIcon
+            case .hidden: .hiddenControlItem
+            case .alwaysHidden: .alwaysHiddenControlItem
+            }
+            result[windowID] = info
+        }
+
+        guard !infoByWindowID.isEmpty else {
+            return items
+        }
+
+        return items.map { item in
+            if let info = infoByWindowID[item.windowID] {
+                return item.replacingInfo(info)
+            }
+            return item
         }
     }
 }
@@ -1325,7 +1372,9 @@ extension MenuBarItemManager {
 
         Logger.itemManager.info("Temporarily showing \(item.logString)")
 
-        var items = MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        var items = applyingKnownControlItemInfo(
+            to: MenuBarItem.getMenuBarItems(onScreenOnly: false, activeSpaceOnly: true)
+        )
 
         guard let destination = getReturnDestination(for: item, in: items) else {
             Logger.itemManager.warning("No return destination for \(item.logString)")
