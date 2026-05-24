@@ -31,6 +31,16 @@ final class RunLoopLocalEventMonitor {
             true,
             0
         ) { _, _ in
+            // Only intercept events for menu bar tracking, which happens while no
+            // app window is focused. When a window is key (e.g. Settings), the user
+            // is interacting with normal AppKit/SwiftUI controls; dequeuing and
+            // re-posting their events here corrupts the event stream and cancels
+            // control gestures (a held click never completes as a tap). Leave those
+            // events untouched so they dispatch normally.
+            if NSApp.keyWindow != nil {
+                return
+            }
+
             var events = [NSEvent]()
 
             while let event = NSApp.nextEvent(matching: .any, until: nil, inMode: .default, dequeue: true) {

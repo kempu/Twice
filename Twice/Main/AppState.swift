@@ -105,7 +105,14 @@ final class AppState: ObservableObject {
             guard let self else {
                 return
             }
-            isActiveSpaceFullscreen = Bridging.isSpaceFullscreen(Bridging.activeSpaceID)
+            // Only publish when the value actually changes. This fires on every
+            // left mouse down (delayed 0.1s); reassigning unconditionally would
+            // post `objectWillChange` ~0.1s after each click and re-render the
+            // settings UI mid-click, cancelling button/toggle press gestures.
+            let isFullscreen = Bridging.isSpaceFullscreen(Bridging.activeSpaceID)
+            if isFullscreen != isActiveSpaceFullscreen {
+                isActiveSpaceFullscreen = isFullscreen
+            }
         }
         .store(in: &c)
 

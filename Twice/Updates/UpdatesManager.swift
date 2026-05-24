@@ -15,8 +15,17 @@ final class UpdatesManager: NSObject, ObservableObject {
     /// The date of the last update check.
     @Published var lastUpdateCheckDate: Date?
 
+    /// A Boolean value that indicates whether an update check is running.
+    @Published var isCheckingForUpdates = false
+
     /// The shared app state.
     private(set) weak var appState: AppState?
+
+    /// A Boolean value that indicates whether setup has already run.
+    private var isSetup = false
+
+    /// The latest GitHub release endpoint.
+    private let latestReleaseURL = URL(string: "https://api.github.com/repos/kempu/Twice/releases/latest")!
 
     /// The underlying updater controller.
     private(set) lazy var updaterController = SPUStandardUpdaterController(
@@ -60,8 +69,20 @@ final class UpdatesManager: NSObject, ObservableObject {
 
     /// Sets up the manager.
     func performSetup() {
+        guard !isSetup else {
+            return
+        }
+        isSetup = true
+
         _ = updaterController
+        syncUpdaterState()
         configureCancellables()
+    }
+
+    /// Syncs published state with the underlying updater.
+    private func syncUpdaterState() {
+        canCheckForUpdates = updater.canCheckForUpdates
+        lastUpdateCheckDate = updater.lastUpdateCheckDate
     }
 
     /// Configures the internal observers for the manager.
@@ -74,25 +95,105 @@ final class UpdatesManager: NSObject, ObservableObject {
 
     /// Checks for app updates.
     @objc func checkForUpdates() {
-        #if DEBUG
-        // Checking for updates hangs in debug mode.
-        let alert = NSAlert()
-        alert.messageText = "Checking for updates is not supported in debug mode."
-        alert.runModal()
-        #else
+        guard !isCheckingForUpdates else {
+            return
+        }
+
         guard let appState else {
             return
         }
+
         // Activate the app in case an alert needs to be displayed.
         appState.activate(withPolicy: .regular)
+        appState.navigationState.settingsNavigationIdentifier = .about
         appState.openSettingsWindow()
-        updater.checkForUpdates()
-        #endif
+
+        Task {
+            await checkGitHubForUpdates()
+        }
+    }
+
+    /// Shows an alert owned by the app.
+    private func showAlert(message: String, informativeText: String = "") {
+        appState?.activate(withPolicy: .regular)
+
+        let alert = NSAlert()
+        alert.messageText = message
+        alert.informativeText = informativeText
+        alert.runModal()
+    }
+
+    /// Checks GitHub Releases for the latest available version.
+    private func checkGitHubForUpdates() async {
+        isCheckingForUpdates = true
+        defer {
+            isCheckingForUpdates = false
+        }
+
+        do {
+            let release = try await fetchLatestRelease()
+            lastUpdateCheckDate = .now
+
+            if isVersion(release.version, newerThan: Constants.versionString) {
+                showUpdateAvailableAlert(for: release)
+            } else {
+                showAlert(message: "Twice is up to date.")
+            }
+        } catch {
+            showAlert(
+                message: "Unable to check for updates.",
+                informativeText: error.localizedDescription
+            )
+        }
+    }
+
+    /// Fetches the latest GitHub release.
+    private func fetchLatestRelease() async throws -> GitHubRelease {
+        let (data, response) = try await URLSession.shared.data(from: latestReleaseURL)
+
+        guard
+            let httpResponse = response as? HTTPURLResponse,
+            200..<300 ~= httpResponse.statusCode
+        else {
+            throw UpdateCheckError.invalidResponse
+        }
+
+        let decoder = JSONDecoder()
+        decoder.keyDecodingStrategy = .convertFromSnakeCase
+        return try decoder.decode(GitHubRelease.self, from: data)
+    }
+
+    /// Shows an update alert for the given release.
+    private func showUpdateAvailableAlert(for release: GitHubRelease) {
+        let alert = NSAlert()
+        alert.messageText = "Version \(release.version) is available."
+        alert.informativeText = "You are running version \(Constants.versionString)."
+        alert.addButton(withTitle: "Open Release")
+        alert.addButton(withTitle: "Cancel")
+
+        if alert.runModal() == .alertFirstButtonReturn {
+            NSWorkspace.shared.open(release.htmlUrl)
+        }
+    }
+
+    /// Returns whether the first version is newer than the second.
+    private func isVersion(_ version: String, newerThan currentVersion: String) -> Bool {
+        normalizedVersion(version)
+            .compare(normalizedVersion(currentVersion), options: [.caseInsensitive, .numeric]) == .orderedDescending
+    }
+
+    /// Normalizes version tags for comparison.
+    private func normalizedVersion(_ version: String) -> String {
+        version.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
     }
 }
 
 // MARK: UpdatesManager: SPUUpdaterDelegate
 extension UpdatesManager: @preconcurrency SPUUpdaterDelegate {
+    func updaterShouldPromptForPermissionToCheck(forUpdates updater: SPUUpdater) -> Bool {
+        false
+    }
+
     func updater(_ updater: SPUUpdater, willScheduleUpdateCheckAfterDelay delay: TimeInterval) {
         guard let appState else {
             return
@@ -143,3 +244,25 @@ extension UpdatesManager: @preconcurrency SPUStandardUserDriverDelegate {
 
 // MARK: UpdatesManager: BindingExposable
 extension UpdatesManager: BindingExposable { }
+
+// MARK: - GitHubRelease
+private struct GitHubRelease: Decodable {
+    let tagName: String
+    let htmlUrl: URL
+
+    var version: String {
+        tagName.trimmingCharacters(in: CharacterSet(charactersIn: "vV"))
+    }
+}
+
+// MARK: - UpdateCheckError
+private enum UpdateCheckError: LocalizedError {
+    case invalidResponse
+
+    var errorDescription: String? {
+        switch self {
+        case .invalidResponse:
+            "GitHub returned an invalid response."
+        }
+    }
+}

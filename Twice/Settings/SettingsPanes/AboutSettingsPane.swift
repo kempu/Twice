@@ -7,15 +7,13 @@ import SwiftUI
 
 struct AboutSettingsPane: View {
     @EnvironmentObject var appState: AppState
-    @Environment(\.openURL) private var openURL
 
     private var updatesManager: UpdatesManager {
         appState.updatesManager
     }
 
-    private var acknowledgementsURL: URL {
-        // swiftlint:disable:next force_unwrapping
-        Bundle.main.url(forResource: "Acknowledgements", withExtension: "pdf")!
+    private var acknowledgementsURL: URL? {
+        Bundle.main.url(forResource: "Acknowledgements", withExtension: "pdf")
     }
 
     private var sourceURL: URL {
@@ -38,6 +36,10 @@ struct AboutSettingsPane: View {
         } else {
             "Never"
         }
+    }
+
+    private func open(_ url: URL) {
+        NSWorkspace.shared.open(url)
     }
 
     var body: some View {
@@ -104,9 +106,7 @@ struct AboutSettingsPane: View {
         TwiceSection(options: .hasDividers) {
             automaticallyCheckForUpdates
             automaticallyDownloadUpdates
-            if updatesManager.canCheckForUpdates {
-                checkForUpdates
-            }
+            checkForUpdates
         }
         .frame(maxWidth: 600)
     }
@@ -130,9 +130,10 @@ struct AboutSettingsPane: View {
     @ViewBuilder
     private var checkForUpdates: some View {
         HStack {
-            Button("Check for Updates") {
+            Button(updatesManager.isCheckingForUpdates ? "Checking…" : "Check for Updates") {
                 updatesManager.checkForUpdates()
             }
+            .disabled(updatesManager.isCheckingForUpdates)
             Spacer()
             Text("Last checked: \(lastUpdateCheckString)")
                 .font(.caption)
@@ -147,16 +148,18 @@ struct AboutSettingsPane: View {
             }
             Spacer()
             Button("Acknowledgements") {
-                NSWorkspace.shared.open(acknowledgementsURL)
+                if let acknowledgementsURL {
+                    open(acknowledgementsURL)
+                }
             }
             Button("Source Code") {
-                openURL(sourceURL)
+                open(sourceURL)
             }
             Button("Original Ice") {
-                openURL(originalProjectURL)
+                open(originalProjectURL)
             }
             Button("Report a Bug") {
-                openURL(issuesURL)
+                open(issuesURL)
             }
         }
         .padding(8)
